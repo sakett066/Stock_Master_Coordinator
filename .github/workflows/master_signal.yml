@@ -2,9 +2,13 @@ name: Master Signal Coordinator
 
 on:
   schedule:
+    # 9:30 AM IST
     - cron: '30 1 * * 0-4'
+    # 12:00 PM IST
     - cron: '0 4 * * 0-4'
+    # 2:00 PM IST
     - cron: '0 6 * * 0-4'
+    # 3:15 PM IST
     - cron: '15 7 * * 0-4'
   workflow_dispatch:
 
@@ -17,7 +21,7 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install packages
-        run: pip install nsetools requests
+        run: pip install nsetools requests numpy
       - name: Run Master Scan
         env:
           TELEGRAM_MASTER_BOT_TOKEN: ${{ secrets.TELEGRAM_MASTER_BOT_TOKEN }}
