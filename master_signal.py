@@ -1,185 +1,299 @@
 """
-MASTER SIGNAL COORDINATOR v1.0
-Combines: Stock Analyzer + News Scanner + Market Pulse
-Finds HIGHEST CONVICTION trades across all 3 systems
+MASTER COORDINATOR v5.0 - 8-Layer Institutional Grade Analysis
+Combines: Value, Momentum, Smart Money, Wave Pattern, Volume Profile, 
+          Mean Reversion, Sector Rotation, Risk Arbitrage
 """
 import os
 import time
 import requests
-from nsetools import Nse
+import warnings
+import numpy as np
 from datetime import datetime
 
+warnings.filterwarnings('ignore')
 os.environ['TZ'] = 'Asia/Kolkata'
 
-# Use same bot or create a 4th for master signals
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_MASTER_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_MASTER_CHAT_ID')
 
-# ============================================
-# STOCK UNIVERSE (All 3 bots combined)
-# ============================================
-ALL_STOCKS = [
-    # Large Caps
-    'TCS', 'INFY', 'WIPRO', 'HCLTECH', 'TECHM',
-    'HDFCBANK', 'ICICIBANK', 'KOTAKBANK', 'SBIN', 'AXISBANK',
-    'RELIANCE', 'ITC', 'LT', 'HINDUNILVR',
-    'SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB',
-    'TITAN', 'ASIANPAINT', 'MARUTI', 'BAJFINANCE', 'BAJAJFINSV',
-    'POWERGRID', 'NTPC', 'ONGC', 'TATAPOWER', 'ADANIPORTS',
-    # Mid Caps
-    'TRENT', 'DMART', 'PIDILITIND', 'DABUR',
-    'BANDHANBNK', 'FEDERALBNK', 'IDFCFIRSTB', 'AUBANK',
-    'HAL', 'BEL', 'IRCON', 'JINDALSTEL', 'TATASTEEL', 'JSWSTEEL',
-    'LAURUSLABS', 'ALKEM', 'BIOCON', 'CHOLAFIN', 'MUTHOOTFIN',
-    'PERSISTENT', 'EICHERMOT', 'TVSMOTOR', 'TATAMOTORS', 'M&M',
-    'ZOMATO', 'IRCTC', 'TATACONSUM', 'ADANIGREEN',
-    'NHPC', 'PFC', 'RECLTD', 'CANBK', 'UNIONBANK', 'PNB'
-]
+STOCKS = {
+    'IT': ['TCS', 'INFY', 'WIPRO', 'HCLTECH', 'TECHM'],
+    'Banking': ['HDFCBANK', 'ICICIBANK', 'KOTAKBANK', 'SBIN', 'AXISBANK'],
+    'Pharma': ['SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB'],
+    'Consumer': ['ITC', 'HINDUNILVR', 'TITAN', 'DMART', 'TRENT'],
+    'Auto': ['MARUTI', 'M&M'],
+    'Finance': ['BAJFINANCE', 'BAJAJFINSV', 'CHOLAFIN'],
+    'Energy': ['RELIANCE', 'POWERGRID', 'NTPC', 'ONGC', 'TATAPOWER'],
+    'Others': ['LT', 'HAL', 'BEL', 'IRCTC', 'ASIANPAINT']
+}
+
+def robust_nse_fetch(symbol):
+    for _ in range(2):
+        try:
+            from nsetools import Nse
+            nse = Nse()
+            q = nse.get_quote(symbol)
+            if q and q.get('lastPrice') and float(q.get('lastPrice', 0)) > 0:
+                intraday = q.get('intraDayHighLow', {})
+                weekly = q.get('weekHighLow', {})
+                return {
+                    'symbol': symbol,
+                    'lastPrice': float(q.get('lastPrice', 0)),
+                    'open': float(q.get('open', 0)),
+                    'dayHigh': float(intraday.get('max', 0)),
+                    'dayLow': float(intraday.get('min', 0)),
+                    'previousClose': float(q.get('previousClose', 0)),
+                    'pChange': float(q.get('pChange', 0)),
+                    'vwap': float(q.get('vwap', 0)) if q.get('vwap') else 0,
+                    'totalTradedVolume': int(q.get('totalTradedVolume', 0)),
+                    'totalBuyQuantity': int(q.get('totalBuyQuantity', 0)),
+                    'totalSellQuantity': int(q.get('totalSellQuantity', 0)),
+                    'deliveryQuantity': int(q.get('deliveryQuantity', 0)),
+                    'weekHighLow': {'max': float(weekly.get('max', 0)), 'min': float(weekly.get('min', 0))}
+                }
+        except: pass
+        time.sleep(1)
+    
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(f"{symbol}.NS")
+        info = ticker.info
+        hist = ticker.history(period="5d")
+        if not hist.empty:
+            price = float(hist['Close'].iloc[-1])
+            prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else price
+            return {
+                'symbol': symbol,
+                'lastPrice': price,
+                'open': float(hist['Open'].iloc[-1]),
+                'dayHigh': float(hist['High'].iloc[-1]),
+                'dayLow': float(hist['Low'].iloc[-1]),
+                'previousClose': prev,
+                'pChange': float(((price-prev)/prev)*100),
+                'vwap': price,
+                'totalTradedVolume': int(hist['Volume'].iloc[-1]),
+                'totalBuyQuantity': 0, 'totalSellQuantity': 0, 'deliveryQuantity': 0,
+                'weekHighLow': {'max': float(info.get('fiftyTwoWeekHigh', price*1.1)), 'min': float(info.get('fiftyTwoWeekLow', price*0.9))}
+            }
+    except: pass
+    return None
 
 # ============================================
-# MULTI-FACTOR SCORING
+# 8 ANALYSIS LAYERS
 # ============================================
-def calculate_master_score(symbol, price_data):
-    """Score stock across ALL 3 systems"""
+
+def layer_1_value(data):
+    """Value detection - Is the stock at good price?"""
+    price = data['lastPrice']
+    h52 = data['weekHighLow']['max']
+    l52 = data['weekHighLow']['min']
+    
+    if h52 == 0 or l52 == 0: return {'score': 0, 'signal': 'No data'}
+    
+    position = ((price - l52) / (h52 - l52)) * 100
+    discount = ((h52 - price) / h52) * 100
+    
+    if position < 25:
+        return {'score': 20, 'signal': '🔥 DEEP VALUE', 'detail': f'{discount:.0f}% below 52W high'}
+    elif position < 45:
+        return {'score': 15, 'signal': '💰 Good Value', 'detail': f'{discount:.0f}% below 52W high'}
+    elif position < 65:
+        return {'score': 10, 'signal': '📊 Fair Value', 'detail': f'{discount:.0f}% below 52W high'}
+    elif position < 85:
+        return {'score': 5, 'signal': '⚠️ Premium', 'detail': f'Near 52W high'}
+    else:
+        return {'score': 0, 'signal': '🔴 Expensive', 'detail': 'At 52W high'}
+
+def layer_2_momentum(data):
+    """Momentum detection - Is the stock moving right now?"""
+    change = data['pChange']
+    vwap = data['vwap']
+    price = data['lastPrice']
+    
     score = 0
     signals = []
-    confidence_factors = []
     
-    p = price_data
+    if 0.5 < change < 2:
+        score += 10; signals.append(f"+{change:.1f}% today")
+    elif 0 < change <= 0.5:
+        score += 6; signals.append("Mild positive")
+    elif -1 < change < 0:
+        score += 4; signals.append("Slight dip")
     
-    # 1. TECHNICAL SCORE (Stock Analyzer method) - 35 points
-    tech_score = 0
-    day_range = p['high'] - p['low']
-    pos = ((p['price'] - p['low']) / day_range * 100) if day_range > 0 else 50
+    if vwap > 0 and price > vwap:
+        score += 5; signals.append("Above VWAP")
     
-    if 50 < pos < 80: tech_score += 10
-    elif pos < 30: tech_score += 8
+    if data['open'] > 0 and price > data['open']:
+        score += 3; signals.append("Above open")
     
-    if p['high_52'] > 0:
-        dist_high = ((p['high_52'] - p['price']) / p['high_52']) * 100
-        if dist_high > 30: tech_score += 12
-        elif dist_high > 15: tech_score += 8
+    return {'score': min(20, score), 'signal': ' | '.join(signals) if signals else 'No momentum'}
+
+def layer_3_smart_money(data):
+    """Smart money detection - Are institutions buying?"""
+    score = 0
+    signals = []
     
-    if p['low_52'] > 0:
-        dist_low = ((p['price'] - p['low_52']) / p['low_52']) * 100
-        if dist_low < 10: tech_score += 8
-    
-    if 0.5 < p['change'] < 2: tech_score += 8
-    elif 0 < p['change'] <= 0.5: tech_score += 5
-    
-    if tech_score >= 25:
-        signals.append("📊 Technical")
-        confidence_factors.append(f"Tech Score: {tech_score}/35")
-    score += tech_score
-    
-    # 2. NEO WAVE SCORE - 35 points
-    wave_score = 0
-    fib_range = p['high_52'] - p['low_52']
-    
-    if fib_range > 0:
-        fib_382 = p['low_52'] + fib_range * 0.382
-        fib_500 = p['low_52'] + fib_range * 0.500
-        fib_618 = p['low_52'] + fib_range * 0.618
-        
-        # Wave 2: Pullback to Fib zone (best buy)
-        if abs(p['price'] - fib_618) / p['price'] < 0.03:
-            wave_score += 20
-            signals.append("🌊 Wave-2 Golden Zone")
-        elif abs(p['price'] - fib_500) / p['price'] < 0.03:
-            wave_score += 15
-            signals.append("🌊 Wave-2 50% Fib")
-        
-        # Wave 3: Above 50% Fib (strong momentum)
-        if p['price'] > fib_500 and p['change'] > 0:
-            wave_score += 15
-            signals.append("🌊 Wave-3 Power Move")
-        
-        # Near 52W high breakout
-        if p['high_52'] > 0 and ((p['high_52'] - p['price']) / p['high_52']) < 0.08:
-            wave_score += 12
-            signals.append("🌊 Near 52W Breakout")
-    
-    if wave_score >= 15:
-        confidence_factors.append(f"Wave Score: {wave_score}/35")
-    score += wave_score
-    
-    # 3. SMART MONEY (Volume/Delivery) - 15 points
-    smart_score = 0
     try:
-        buy_qty = p.get('buy_qty', 0)
-        sell_qty = p.get('sell_qty', 0)
-        total = buy_qty + sell_qty
+        bq = data['totalBuyQuantity']
+        sq = data['totalSellQuantity']
+        dq = data['deliveryQuantity']
+        tv = data['totalTradedVolume']
         
-        if total > 0:
-            buy_ratio = (buy_qty / total) * 100
-            if buy_ratio > 60: smart_score += 12
-            elif buy_ratio > 50: smart_score += 8
-            elif buy_ratio > 40: smart_score += 5
+        if sq > 0 and bq / sq > 1.3:
+            score += 8; signals.append(f"Buy pressure {bq/sq:.1f}x")
         
-        delivery = p.get('delivery', 0)
-        if delivery > 60: smart_score += 3
-    except:
-        pass
+        if tv > 0 and dq > 0:
+            dp = (dq / tv) * 100
+            if dp > 60:
+                score += 10; signals.append(f"Delivery {dp:.0f}%")
+            elif dp > 40:
+                score += 5; signals.append(f"Delivery {dp:.0f}%")
+    except: pass
     
-    if smart_score >= 8:
-        signals.append("💰 Smart Money")
-        confidence_factors.append(f"Smart: {smart_score}/15")
-    score += smart_score
+    return {'score': min(20, score), 'signal': ' | '.join(signals) if signals else 'No smart money signal'}
+
+def layer_4_wave_position(data):
+    """Elliott Wave position"""
+    price = data['lastPrice']
+    h52 = data['weekHighLow']['max']
+    l52 = data['weekHighLow']['min']
     
-    # 4. MOMENTUM - 15 points
-    momentum = 0
-    if 1 < p['change'] < 3: momentum += 10
-    elif 0.5 < p['change'] <= 1: momentum += 7
-    elif 0 < p['change'] <= 0.5: momentum += 5
-    elif -2 < p['change'] < 0: momentum += 4
+    if h52 == 0 or l52 == 0: return {'score': 0, 'signal': 'No data'}
     
-    if p['price'] > p.get('vwap', 0): momentum += 5
+    fib_range = h52 - l52
+    position = ((price - l52) / fib_range) * 100 if fib_range > 0 else 50
     
-    if momentum >= 8:
-        signals.append("⚡ Momentum")
-    score += momentum
+    if position < 23.6:
+        return {'score': 18, 'signal': '🌊 Wave-1: Rally Starting', 'priority': 1}
+    elif position < 50:
+        return {'score': 15, 'signal': '🌊 Wave-2: Best Buy Zone', 'priority': 2}
+    elif position < 78.6:
+        return {'score': 10, 'signal': '🌊 Wave-3/4: Trending', 'priority': 3}
+    else:
+        return {'score': 3, 'signal': '🌊 Wave-5: Near Top', 'priority': 5}
+
+def layer_5_volume_profile(data):
+    """Volume analysis"""
+    score = 0
+    try:
+        vol = data['totalTradedVolume']
+        if vol > 5000000: score = 10
+        elif vol > 2000000: score = 7
+        elif vol > 500000: score = 4
+    except: pass
+    return {'score': min(10, score), 'signal': f"Volume: {data['totalTradedVolume']:,}" if data['totalTradedVolume'] > 0 else 'Low volume'}
+
+def layer_6_mean_reversion(data):
+    """Mean reversion - How far from average?"""
+    price = data['lastPrice']
+    h52 = data['weekHighLow']['max']
+    l52 = data['weekHighLow']['min']
     
-    # Total
-    score = min(95, score + 5)
+    if h52 == 0 or l52 == 0: return {'score': 0, 'signal': 'No data'}
     
-    # Conviction Level
-    if score >= 75:
-        conviction = "🔥 SUPER SIGNAL"
+    mid_52 = (h52 + l52) / 2
+    deviation = ((price - mid_52) / mid_52) * 100
+    
+    if deviation < -20:
+        return {'score': 12, 'signal': '⬇️ Oversold - Reversion UP likely'}
+    elif deviation < -10:
+        return {'score': 8, 'signal': '⬇️ Below mean - Room to grow'}
+    elif deviation > 20:
+        return {'score': 0, 'signal': '⬆️ Overbought - Reversion DOWN likely'}
+    elif deviation > 10:
+        return {'score': 3, 'signal': '⬆️ Above mean - Caution'}
+    else:
+        return {'score': 5, 'signal': '➡️ Near mean - Balanced'}
+
+def layer_7_sector_strength(sector):
+    """Sector rotation analysis"""
+    sector_scores = {
+        'IT': 8, 'Banking': 7, 'Pharma': 8, 'Consumer': 7,
+        'Auto': 6, 'Finance': 7, 'Energy': 6, 'Others': 5
+    }
+    return {'score': sector_scores.get(sector, 5), 'signal': f'Sector: {sector}'}
+
+def layer_8_risk_arbitrage(data):
+    """Risk assessment"""
+    price = data['lastPrice']
+    h52 = data['weekHighLow']['max']
+    l52 = data['weekHighLow']['min']
+    
+    score = 10
+    warnings = []
+    
+    if h52 > 0 and l52 > 0:
+        volatility = ((h52 - l52) / l52) * 100
+        if volatility > 80:
+            score -= 5; warnings.append("High volatility")
+        elif volatility > 50:
+            score -= 2
+    
+    if abs(data['pChange']) > 5:
+        score -= 3; warnings.append("Extreme move today")
+    
+    return {'score': max(0, min(10, score)), 'signal': ' | '.join(warnings) if warnings else 'Low risk'}
+
+# ============================================
+# COMBINE ALL 8 LAYERS
+# ============================================
+def master_analysis(data, sector):
+    """Combine all 8 layers into one SUPER SCORE"""
+    
+    layers = {
+        '💎 Value': layer_1_value(data),
+        '⚡ Momentum': layer_2_momentum(data),
+        '💰 Smart Money': layer_3_smart_money(data),
+        '🌊 Wave': layer_4_wave_position(data),
+        '📊 Volume': layer_5_volume_profile(data),
+        '🔄 Mean Rev': layer_6_mean_reversion(data),
+        '🏭 Sector': layer_7_sector_strength(sector),
+        '🛡️ Risk': layer_8_risk_arbitrage(data)
+    }
+    
+    total_score = sum(l['score'] for l in layers.values())
+    total_score = min(95, max(15, total_score + 10))
+    
+    # Determine signal
+    active_signals = [name for name, l in layers.items() if l['score'] >= 8]
+    
+    if len(active_signals) >= 6:
+        signal = "🔥 MASTER SUPER SIGNAL"
         stars = "⭐⭐⭐⭐⭐"
+        confidence = "VERY HIGH"
         position = "20%"
-    elif score >= 60:
-        conviction = "🟢 HIGH CONVICTION"
+    elif len(active_signals) >= 4:
+        signal = "🟢 STRONG CONSENSUS"
         stars = "⭐⭐⭐⭐"
+        confidence = "HIGH"
         position = "15%"
-    elif score >= 45:
-        conviction = "🔵 MODERATE"
+    elif len(active_signals) >= 2:
+        signal = "🔵 MODERATE"
         stars = "⭐⭐⭐"
+        confidence = "MODERATE"
         position = "10%"
     else:
-        conviction = "🟡 WATCH"
+        signal = "🟡 WEAK"
         stars = "⭐⭐"
+        confidence = "LOW"
         position = "5%"
     
-    # Calculate targets
-    target = round(p['price'] * (1 + score/100), 0)
-    stop_loss = round(p['price'] * 0.95, 0)
-    
     return {
-        'symbol': symbol,
-        'price': p['price'],
-        'change': p['change'],
-        'score': score,
+        'symbol': data['symbol'],
+        'sector': sector,
+        'price': data['lastPrice'],
+        'change': data['pChange'],
+        'total_score': total_score,
+        'signal': signal,
         'stars': stars,
-        'conviction': conviction,
-        'signals': signals,
-        'factors': confidence_factors,
-        'target': target,
-        'stop_loss': stop_loss,
+        'confidence': confidence,
         'position': position,
-        'risk_reward': round(((target - p['price']) / (p['price'] - stop_loss)), 1) if (p['price'] - stop_loss) > 0 else 0
+        'layers': layers,
+        'active_count': len(active_signals),
+        'active_signals': active_signals
     }
 
-def send_master_alert(text):
+def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         if len(text) > 3900: text = text[:3900]
@@ -187,120 +301,79 @@ def send_master_alert(text):
         return resp.json().get('ok', False)
     except: return False
 
-def run_master_scan():
-    nse = Nse()
+def run():
     results = []
     now = datetime.now()
+    print(f"🔥 MASTER COORDINATOR v5.0 - {now.strftime('%d-%b %I:%M %p')}")
     
-    print(f"🔍 MASTER SIGNAL SCAN - {now.strftime('%d-%b %I:%M %p')}")
+    all_stocks = [(sym, sec) for sec, syms in STOCKS.items() for sym in syms]
     
-    for symbol in ALL_STOCKS:
+    for symbol, sector in all_stocks:
         try:
-            q = nse.get_quote(symbol)
-            if not q: continue
+            data = robust_nse_fetch(symbol)
+            if not data: continue
             
-            intraday = q.get('intraDayHighLow', {})
-            weekly = q.get('weekHighLow', {})
+            result = master_analysis(data, sector)
+            results.append(result)
             
-            price = float(q.get('lastPrice', 0))
-            if price == 0: continue
-            
-            # Gather all data
-            data = {
-                'price': price,
-                'high': float(intraday.get('max', 0)),
-                'low': float(intraday.get('min', 0)),
-                'open': float(q.get('open', 0)),
-                'change': float(q.get('pChange', 0)),
-                'vwap': float(q.get('vwap', 0)) if q.get('vwap') else 0,
-                'high_52': float(weekly.get('max', 0)),
-                'low_52': float(weekly.get('min', 0)),
-                'prev_close': float(q.get('previousClose', 0))
-            }
-            
-            # Volume data
-            try:
-                data['buy_qty'] = float(q.get('totalBuyQuantity', 0))
-                data['sell_qty'] = float(q.get('totalSellQuantity', 0))
-                dq = float(q.get('deliveryQuantity', 0))
-                tv = float(q.get('totalTradedVolume', 0))
-                data['delivery'] = (dq/tv*100) if tv > 0 else 0
-            except:
-                data['buy_qty'] = 0
-                data['sell_qty'] = 0
-                data['delivery'] = 0
-            
-            result = calculate_master_score(symbol, data)
-            
-            if result['score'] >= 40:  # Only show meaningful signals
-                results.append(result)
-            
-            time.sleep(0.08)
-        except:
-            pass
+            print(f"  {symbol:15} Score:{result['total_score']:.0f} | {result['active_count']}/8 layers | {result['signal']}")
+            time.sleep(0.1)
+        except: pass
     
-    return results, now
-
-def build_master_message(results, now):
-    if not results: return None
+    if not results:
+        send_telegram("❌ No data available.")
+        return
     
-    results.sort(key=lambda x: x['score'], reverse=True)
+    results.sort(key=lambda x: x['total_score'], reverse=True)
     
-    super_signals = [r for r in results if r['score'] >= 75]
-    high_conv = [r for r in results if 60 <= r['score'] < 75]
+    super_signals = [r for r in results if r['active_count'] >= 6]
+    strong = [r for r in results if 4 <= r['active_count'] < 6]
     
-    msg = f"🔥 <b>MASTER SIGNAL COORDINATOR</b>\n"
+    msg = f"<b>🔥 MASTER COORDINATOR v5.0</b>\n"
     msg += f"{now.strftime('%d-%b %I:%M %p')} IST\n"
     msg += f"{'═'*35}\n\n"
     
-    msg += f"📊 <b>Combined Analysis:</b>\n"
-    msg += f"├ Technical + Neo Wave + Smart Money\n"
-    msg += f"├ Super Signals: {len(super_signals)}\n"
-    msg += f"├ High Conviction: {len(high_conv)}\n"
-    msg += f"└ Total Scanned: {len(results)}\n\n"
+    msg += f"<b>8-Layer Analysis Complete:</b>\n"
+    msg += f"Value | Momentum | Smart Money | Wave\n"
+    msg += f"Volume | Mean Rev | Sector | Risk\n\n"
     
-    if super_signals:
-        msg += f"🔥 <b>SUPER SIGNALS (All Systems Agree)</b>\n{'═'*35}\n\n"
-        for i, r in enumerate(super_signals[:3], 1):
-            msg += format_signal(i, r)
+    msg += f"<b>RESULTS:</b>\n"
+    msg += f"🔥 Master Signals (6+/8): {len(super_signals)}\n"
+    msg += f"🟢 Strong (4-5/8): {len(strong)}\n"
+    msg += f"Total Analyzed: {len(results)}\n\n"
     
-    if high_conv:
-        msg += f"<b>HIGH CONVICTION PICKS</b>\n{'═'*35}\n\n"
-        for i, r in enumerate(high_conv[:3], 1):
-            msg += format_signal(i + len(super_signals), r)
+    # Show top picks
+    top_picks = super_signals[:3] if super_signals else results[:5]
     
-    # Common across systems
-    common = [r for r in results if len(r['signals']) >= 3]
-    if common:
-        msg += f"\n🎯 <b>MULTI-SYSTEM CONFIRMED ({len(common)} stocks)</b>\n"
-        msg += f"These appear strong across multiple factors:\n"
-        for r in common[:3]:
-            msg += f"• {r['symbol']} - {', '.join(r['signals'])}\n"
+    msg += f"<b>🎯 TOP PICKS</b>\n{'═'*35}\n\n"
     
-    msg += f"\n{'═'*35}\n"
-    msg += f"📱 <i>Master Coordinator | Combined Analysis</i>"
+    for i, r in enumerate(top_picks, 1):
+        emoji = "🔥" if r['active_count'] >= 6 else "🟢" if r['active_count'] >= 4 else "🔵"
+        
+        msg += f"{emoji} <b>#{i} {r['symbol']}</b> | {r['sector']} | Rs.{r['price']:.0f}\n"
+        msg += f"{'─'*35}\n"
+        msg += f"Score: <b>{r['total_score']:.0f}/100</b> {r['stars']}\n"
+        msg += f"Signal: <b>{r['signal']}</b>\n"
+        msg += f"Confidence: {r['confidence']} | Position: {r['position']}\n"
+        msg += f"Layers Active: <b>{r['active_count']}/8</b>\n\n"
+        
+        msg += f"<b>Layer Details:</b>\n"
+        for name, layer in r['layers'].items():
+            if layer['score'] >= 8:
+                msg += f"  ✅ {name}: {layer['signal']} ({layer['score']}pts)\n"
+            elif layer['score'] >= 4:
+                msg += f"  ⚠️ {name}: {layer['signal']} ({layer['score']}pts)\n"
+        
+        msg += f"\n<b>Active Signals:</b> {', '.join(r['active_signals'][:4])}\n\n"
     
-    return msg
-
-def format_signal(i, r):
-    """Format individual signal"""
-    msg = f"<b>#{i} {r['symbol']}</b> | Rs.{r['price']:.0f} | {r['change']:+.1f}%\n"
-    msg += f"{'─'*35}\n"
-    msg += f"Score: {r['score']}/100 {r['stars']}\n"
-    msg += f"Signal: {r['conviction']}\n"
-    msg += f"Systems: {' | '.join(r['signals'])}\n\n"
-    msg += f"💰 Entry: Rs.{r['price']:.0f} | Target: Rs.{r['target']:.0f}\n"
-    msg += f"🛑 Stop: Rs.{r['stop_loss']:.0f} | Position: {r['position']}\n"
-    msg += f"📊 R:R: 1:{r['risk_reward']}\n\n"
-    return msg
+    msg += f"{'═'*35}\n"
+    msg += f"<i>8-Layer Institutional Grade Analysis</i>\n"
+    msg += f"<i>6+/8 layers = Highest conviction trades</i>"
+    
+    send_telegram(msg)
+    
+    super_count = len(super_signals)
+    print(f"\n✅ Sent! Master Signals: {super_count} | Strong: {len(strong)}")
 
 if __name__ == "__main__":
-    results, now = run_master_scan()
-    if results:
-        msg = build_master_message(results, now)
-        if msg and send_master_alert(msg):
-            print(f"✅ Master signal sent! {len(results)} stocks analyzed")
-        else:
-            print("❌ Failed to send")
-    else:
-        print("No significant signals")
+    run()
