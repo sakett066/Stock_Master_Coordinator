@@ -252,31 +252,36 @@ def master_analysis(data, sector):
     }
     
     total_score = sum(l['score'] for l in layers.values())
-    total_score = min(95, max(15, total_score + 10))
+    total_score = min(95, max(25, total_score + 20))  # Boost from +10 to +20
     
-    # Determine signal
-    active_signals = [name for name, l in layers.items() if l['score'] >= 8]
+    # Determine signal (RECALIBRATED)
+    active_signals = [name for name, l in layers.items() if l['score'] >= 5]  # Lowered from 8 to 5
     
-    if len(active_signals) >= 6:
+    if len(active_signals) >= 7:
         signal = "🔥 MASTER SUPER SIGNAL"
         stars = "⭐⭐⭐⭐⭐"
         confidence = "VERY HIGH"
         position = "20%"
-    elif len(active_signals) >= 4:
+    elif len(active_signals) >= 5:
         signal = "🟢 STRONG CONSENSUS"
         stars = "⭐⭐⭐⭐"
         confidence = "HIGH"
         position = "15%"
-    elif len(active_signals) >= 2:
+    elif len(active_signals) >= 3:
         signal = "🔵 MODERATE"
         stars = "⭐⭐⭐"
         confidence = "MODERATE"
         position = "10%"
-    else:
-        signal = "🟡 WEAK"
+    elif len(active_signals) >= 1:
+        signal = "🟡 WATCH"
         stars = "⭐⭐"
         confidence = "LOW"
         position = "5%"
+    else:
+        signal = "⚪ SKIP"
+        stars = "⭐"
+        confidence = "NONE"
+        position = "0%"
     
     return {
         'symbol': data['symbol'],
