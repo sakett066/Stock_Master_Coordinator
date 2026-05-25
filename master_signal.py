@@ -1,7 +1,6 @@
 """
-MASTER COORDINATOR v6.0 - World Class Trading System
-8 Independent Analysis Layers with Proper Data Validation
-Better than institutional systems - Finds hidden opportunities
+MASTER COORDINATOR v7.0 - 11-Layer Analysis
+Differentiated scoring with Price Action, Trend, Breakout layers
 """
 import os
 import time
@@ -31,7 +30,6 @@ def fetch_stock_data(symbol):
     """Fetch stock data with validation"""
     data = None
     
-    # Method 1: nsetools
     try:
         from nsetools import Nse
         nse = Nse()
@@ -59,7 +57,6 @@ def fetch_stock_data(symbol):
     except:
         pass
     
-    # Method 2: Yahoo Finance
     if not data or data['price'] <= 0 or data['high_52'] <= 0:
         try:
             import yfinance as yf
@@ -79,223 +76,178 @@ def fetch_stock_data(symbol):
                     'prev_close': prev,
                     'change_pct': float(((price - prev) / prev) * 100),
                     'vwap': price,
-                    'volume': int(hist['Volume'].iloc[-1]),
-                    'buy_qty': 0,
-                    'sell_qty': 0,
-                    'delivery_qty': 0,
+                    'volume': int(hist['Volume'].iloc[-1]) if not np.isnan(hist['Volume'].iloc[-1]) else 100000,
+                    'buy_qty': 0, 'sell_qty': 0, 'delivery_qty': 0,
                     'high_52': float(info.get('fiftyTwoWeekHigh', price * 1.2)),
                     'low_52': float(info.get('fiftyTwoWeekLow', price * 0.8))
                 }
         except:
             pass
     
-    # Validate data
     if data:
-        # Ensure no NaN or negative values
-        for key in ['price', 'high_52', 'low_52', 'vwap']:
-            val = data.get(key, 0)
-            if not val or np.isnan(val) or val <= 0:
-                if key == 'high_52': data[key] = data['price'] * 1.2
-                elif key == 'low_52': data[key] = data['price'] * 0.8
-                elif key == 'vwap': data[key] = data['price']
-        
+        if np.isnan(data.get('high_52', 0)) or data.get('high_52', 0) <= 0:
+            data['high_52'] = data['price'] * 1.2
+        if np.isnan(data.get('low_52', 0)) or data.get('low_52', 0) <= 0:
+            data['low_52'] = data['price'] * 0.8
+        if np.isnan(data.get('vwap', 0)) or data.get('vwap', 0) <= 0:
+            data['vwap'] = data['price']
+        if np.isnan(data.get('volume', 0)) or data.get('volume', 0) <= 0:
+            data['volume'] = 100000
         return data
     
     return None
 
 # ============================================
-# 8 WORLD-CLASS ANALYSIS LAYERS
+# 11 ANALYSIS LAYERS
 # ============================================
 
 def analyze_value(price, high_52, low_52):
-    """Layer 1: Value - Is this stock undervalued?"""
     if high_52 <= 0 or low_52 <= 0:
         return {'score': 5, 'label': 'Value', 'detail': 'Limited data'}
-    
     discount = ((high_52 - price) / high_52) * 100
-    position = ((price - low_52) / (high_52 - low_52)) * 100
-    
+    position = ((price - low_52) / (high_52 - low_52)) * 100 if (high_52 - low_52) > 0 else 50
     if position < 25 and discount > 25:
-        return {'score': 10, 'label': 'Value', 'detail': f'🔥 DEEP VALUE: {discount:.0f}% off highs'}
+        return {'score': 10, 'label': 'Value', 'detail': f'DEEP VALUE: {discount:.0f}% off highs'}
     elif position < 40:
-        return {'score': 8, 'label': 'Value', 'detail': f'💰 Undervalued: {discount:.0f}% discount'}
+        return {'score': 8, 'label': 'Value', 'detail': f'Undervalued: {discount:.0f}% discount'}
     elif position < 60:
-        return {'score': 6, 'label': 'Value', 'detail': f'📊 Fair value'}
+        return {'score': 6, 'label': 'Value', 'detail': 'Fair value'}
     elif position < 80:
-        return {'score': 3, 'label': 'Value', 'detail': '⚠️ Approaching highs'}
+        return {'score': 3, 'label': 'Value', 'detail': 'Approaching highs'}
     else:
-        return {'score': 1, 'label': 'Value', 'detail': '🔴 At premium'}
+        return {'score': 1, 'label': 'Value', 'detail': 'At premium'}
 
 def analyze_momentum(price, open_p, prev_close, vwap, change_pct):
-    """Layer 2: Momentum - Which direction and how strong?"""
-    score = 5
-    signals = []
-    
-    if change_pct > 1:
-        score += 3
-        signals.append(f"+{change_pct:.1f}%")
-    elif change_pct > 0.3:
-        score += 2
-        signals.append("Rising")
-    elif change_pct > 0:
-        score += 1
-        signals.append("Mild +")
-    elif change_pct > -1:
-        score += 1
-        signals.append("Dip (opportunity)")
-    
-    if vwap > 0 and price > vwap:
-        score += 1
-        signals.append(">VWAP")
-    
-    if price > open_p:
-        score += 1
-        signals.append(">Open")
-    
+    score = 5; signals = []
+    if change_pct > 1: score += 3; signals.append(f"+{change_pct:.1f}%")
+    elif change_pct > 0.3: score += 2; signals.append("Rising")
+    elif change_pct > 0: score += 1; signals.append("Mild +")
+    elif change_pct > -1: score += 1; signals.append("Dip opportunity")
+    if vwap > 0 and price > vwap: score += 1; signals.append(">VWAP")
+    if price > open_p: score += 1; signals.append(">Open")
     return {'score': min(10, score), 'label': 'Momentum', 'detail': ', '.join(signals) if signals else 'Neutral'}
 
 def analyze_smart_money(buy_qty, sell_qty, delivery_qty, volume):
-    """Layer 3: Smart Money - Are big players accumulating?"""
-    score = 5
-    
     if volume > 0 and delivery_qty > 0:
-        delivery_pct = (delivery_qty / volume) * 100
-        if delivery_pct > 60:
-            return {'score': 10, 'label': 'Smart Money', 'detail': f'🟢 Strong delivery {delivery_pct:.0f}%'}
-        elif delivery_pct > 45:
-            return {'score': 8, 'label': 'Smart Money', 'detail': f'🔵 Good delivery {delivery_pct:.0f}%'}
-        elif delivery_pct > 30:
-            return {'score': 6, 'label': 'Smart Money', 'detail': f'🟡 Avg delivery {delivery_pct:.0f}%'}
-    
+        dp = (delivery_qty / volume) * 100
+        if dp > 60: return {'score': 10, 'label': 'Smart Money', 'detail': f'Strong delivery {dp:.0f}%'}
+        elif dp > 45: return {'score': 8, 'label': 'Smart Money', 'detail': f'Good delivery {dp:.0f}%'}
+        elif dp > 30: return {'score': 6, 'label': 'Smart Money', 'detail': f'Avg delivery {dp:.0f}%'}
     if buy_qty > 0 and sell_qty > 0:
         ratio = buy_qty / sell_qty
-        if ratio > 1.5:
-            return {'score': 9, 'label': 'Smart Money', 'detail': f'🟢 Buy pressure {ratio:.1f}x'}
-        elif ratio > 1.2:
-            return {'score': 7, 'label': 'Smart Money', 'detail': f'🔵 Mild buying'}
-    
+        if ratio > 1.5: return {'score': 9, 'label': 'Smart Money', 'detail': f'Buy pressure {ratio:.1f}x'}
+        elif ratio > 1.2: return {'score': 7, 'label': 'Smart Money', 'detail': 'Mild buying'}
     return {'score': 5, 'label': 'Smart Money', 'detail': 'Neutral flow'}
 
 def analyze_wave(price, high_52, low_52, change_pct):
-    """Layer 4: Elliott Wave Position"""
-    if high_52 <= 0 or low_52 <= 0:
-        return {'score': 5, 'label': 'Wave', 'detail': 'No data'}
-    
+    if high_52 <= 0 or low_52 <= 0: return {'score': 5, 'label': 'Wave', 'detail': 'No data'}
     fib_range = high_52 - low_52
-    if fib_range <= 0:
-        return {'score': 5, 'label': 'Wave', 'detail': 'No range'}
-    
+    if fib_range <= 0: return {'score': 5, 'label': 'Wave', 'detail': 'No range'}
     position = ((price - low_52) / fib_range) * 100
-    
-    if position < 20 and change_pct > -2:
-        return {'score': 10, 'label': 'Wave', 'detail': '🌊 Wave 1/2: BEST ENTRY ZONE'}
-    elif position < 38.2:
-        return {'score': 8, 'label': 'Wave', 'detail': '🌊 Wave 2: Pullback buy zone'}
-    elif position < 61.8 and change_pct > 0:
-        return {'score': 7, 'label': 'Wave', 'detail': '🌊 Wave 3: Momentum building'}
-    elif position < 78.6:
-        return {'score': 5, 'label': 'Wave', 'detail': '🌊 Wave 4: Consolidation'}
-    else:
-        return {'score': 2, 'label': 'Wave', 'detail': '🌊 Wave 5: Near top - Caution'}
+    if position < 20 and change_pct > -2: return {'score': 10, 'label': 'Wave', 'detail': 'Wave 1/2: BEST ENTRY'}
+    elif position < 38.2: return {'score': 8, 'label': 'Wave', 'detail': 'Wave 2: Pullback buy'}
+    elif position < 61.8 and change_pct > 0: return {'score': 7, 'label': 'Wave', 'detail': 'Wave 3: Momentum'}
+    elif position < 78.6: return {'score': 5, 'label': 'Wave', 'detail': 'Wave 4: Consolidation'}
+    else: return {'score': 2, 'label': 'Wave', 'detail': 'Wave 5: Near top'}
 
 def analyze_volume(volume):
-    """Layer 5: Volume Profile"""
-    if volume > 5000000:
-        return {'score': 10, 'label': 'Volume', 'detail': '🟢 Very High activity'}
-    elif volume > 2000000:
-        return {'score': 8, 'label': 'Volume', 'detail': '🔵 High volume'}
-    elif volume > 500000:
-        return {'score': 6, 'label': 'Volume', 'detail': '🟡 Moderate'}
-    elif volume > 100000:
-        return {'score': 4, 'label': 'Volume', 'detail': 'Low volume'}
-    else:
-        return {'score': 2, 'label': 'Volume', 'detail': 'Very thin'}
+    if volume > 5000000: return {'score': 10, 'label': 'Volume', 'detail': 'Very High activity'}
+    elif volume > 2000000: return {'score': 8, 'label': 'Volume', 'detail': 'High volume'}
+    elif volume > 500000: return {'score': 6, 'label': 'Volume', 'detail': 'Moderate'}
+    elif volume > 100000: return {'score': 4, 'label': 'Volume', 'detail': 'Low volume'}
+    else: return {'score': 2, 'label': 'Volume', 'detail': 'Very thin'}
 
 def analyze_mean_reversion(price, high_52, low_52):
-    """Layer 6: Mean Reversion"""
-    if high_52 <= 0 or low_52 <= 0:
-        return {'score': 5, 'label': 'Mean Rev', 'detail': 'No data'}
-    
+    if high_52 <= 0 or low_52 <= 0: return {'score': 5, 'label': 'Mean Rev', 'detail': 'No data'}
     mid = (high_52 + low_52) / 2
     deviation = ((price - mid) / mid) * 100
-    
-    if deviation < -25:
-        return {'score': 10, 'label': 'Mean Rev', 'detail': '🔥 Extremely Oversold'}
-    elif deviation < -15:
-        return {'score': 8, 'label': 'Mean Rev', 'detail': '⬇️ Oversold - Bounce likely'}
-    elif deviation < -5:
-        return {'score': 6, 'label': 'Mean Rev', 'detail': 'Below mean'}
-    elif deviation < 5:
-        return {'score': 5, 'label': 'Mean Rev', 'detail': 'At mean'}
-    elif deviation < 15:
-        return {'score': 3, 'label': 'Mean Rev', 'detail': 'Above mean'}
-    else:
-        return {'score': 1, 'label': 'Mean Rev', 'detail': '⬆️ Overbought'}
+    if deviation < -25: return {'score': 10, 'label': 'Mean Rev', 'detail': 'Extremely Oversold'}
+    elif deviation < -15: return {'score': 8, 'label': 'Mean Rev', 'detail': 'Oversold - Bounce likely'}
+    elif deviation < -5: return {'score': 6, 'label': 'Mean Rev', 'detail': 'Below mean'}
+    elif deviation < 5: return {'score': 5, 'label': 'Mean Rev', 'detail': 'At mean'}
+    elif deviation < 15: return {'score': 3, 'label': 'Mean Rev', 'detail': 'Above mean'}
+    else: return {'score': 1, 'label': 'Mean Rev', 'detail': 'Overbought'}
 
 def analyze_sector(sector):
-    """Layer 7: Sector Strength"""
-    scores = {'IT': 8, 'Banking': 7, 'Pharma': 8, 'Consumer': 7,
-              'Auto': 6, 'Finance': 7, 'Energy': 6, 'Others': 5}
-    return {'score': scores.get(sector, 5), 'label': 'Sector', 'detail': f'{sector}'}
+    scores = {'IT': 8, 'Banking': 7, 'Pharma': 8, 'Consumer': 7, 'Auto': 6, 'Finance': 7, 'Energy': 6, 'Others': 5}
+    return {'score': scores.get(sector, 5), 'label': 'Sector', 'detail': sector}
 
 def analyze_risk(price, high_52, low_52, change_pct):
-    """Layer 8: Risk Assessment"""
     score = 10
-    
     if high_52 > 0 and low_52 > 0:
-        volatility = ((high_52 - low_52) / low_52) * 100
-        if volatility > 80:
-            score -= 4
-        elif volatility > 50:
-            score -= 2
-    
-    if abs(change_pct) > 5:
-        score -= 3
-    elif abs(change_pct) > 3:
-        score -= 1
-    
-    if score >= 8:
-        return {'score': score, 'label': 'Risk', 'detail': '🟢 Low Risk'}
-    elif score >= 5:
-        return {'score': score, 'label': 'Risk', 'detail': '🟡 Moderate Risk'}
-    else:
-        return {'score': max(1, score), 'label': 'Risk', 'detail': '🔴 High Risk'}
+        vol = ((high_52 - low_52) / low_52) * 100
+        if vol > 80: score -= 4
+        elif vol > 50: score -= 2
+    if abs(change_pct) > 5: score -= 3
+    elif abs(change_pct) > 3: score -= 1
+    if score >= 8: return {'score': score, 'label': 'Risk', 'detail': 'Low Risk'}
+    elif score >= 5: return {'score': score, 'label': 'Risk', 'detail': 'Moderate Risk'}
+    else: return {'score': max(1, score), 'label': 'Risk', 'detail': 'High Risk'}
+
+def analyze_price_action(price, open_p, high, low, prev_close):
+    score = 5
+    if price > open_p: score += 2
+    if high > low and ((price - low) / (high - low)) > 0.6: score += 2
+    if price > prev_close: score += 1
+    if score >= 8: return {'score': score, 'label': 'Price Action', 'detail': 'Bullish, strong close'}
+    elif score >= 6: return {'score': score, 'label': 'Price Action', 'detail': 'Moderately bullish'}
+    else: return {'score': score, 'label': 'Price Action', 'detail': 'Weak'}
+
+def analyze_trend_strength(price, high_52, low_52, change_pct):
+    if high_52 <= 0 or low_52 <= 0: return {'score': 5, 'label': 'Trend', 'detail': 'No data'}
+    position = ((price - low_52) / (high_52 - low_52)) * 100
+    if position > 60 and change_pct > 0.5: return {'score': 9, 'label': 'Trend', 'detail': 'Strong uptrend'}
+    elif position < 40 and change_pct > 0: return {'score': 8, 'label': 'Trend', 'detail': 'New uptrend emerging'}
+    elif position < 30 and change_pct < 0: return {'score': 3, 'label': 'Trend', 'detail': 'Downtrend - wait'}
+    elif 40 <= position <= 60: return {'score': 5, 'label': 'Trend', 'detail': 'Sideways'}
+    else: return {'score': 5, 'label': 'Trend', 'detail': 'Mixed'}
+
+def analyze_volatility_breakout(price, high_52, low_52, volume):
+    if high_52 <= 0 or low_52 <= 0: return {'score': 5, 'label': 'Breakout', 'detail': 'No data'}
+    range_52 = high_52 - low_52
+    volatility = (range_52 / low_52) * 100
+    if volatility > 50 and volume > 2000000: return {'score': 9, 'label': 'Breakout', 'detail': 'High volatility breakout likely'}
+    elif volatility > 30 and volume > 1000000: return {'score': 7, 'label': 'Breakout', 'detail': 'Breakout potential'}
+    elif volatility < 20: return {'score': 4, 'label': 'Breakout', 'detail': 'Low volatility'}
+    else: return {'score': 5, 'label': 'Breakout', 'detail': 'Normal'}
 
 # ============================================
 # MASTER ANALYSIS
 # ============================================
 def analyze_stock(symbol, sector):
-    """Complete 8-layer analysis on one stock"""
     data = fetch_stock_data(symbol)
-    if not data:
+    if not data or data['price'] <= 0:
         return None
     
     layers = {
-        '💎 Value': analyze_value(data['price'], data['high_52'], data['low_52']),
-        '⚡ Momentum': analyze_momentum(data['price'], data['open'], data['prev_close'], data['vwap'], data['change_pct']),
-        '💰 Smart Money': analyze_smart_money(data['buy_qty'], data['sell_qty'], data['delivery_qty'], data['volume']),
-        '🌊 Wave': analyze_wave(data['price'], data['high_52'], data['low_52'], data['change_pct']),
-        '📊 Volume': analyze_volume(data['volume']),
-        '🔄 Mean Rev': analyze_mean_reversion(data['price'], data['high_52'], data['low_52']),
-        '🏭 Sector': analyze_sector(sector),
-        '🛡️ Risk': analyze_risk(data['price'], data['high_52'], data['low_52'], data['change_pct'])
+        'Value': analyze_value(data['price'], data['high_52'], data['low_52']),
+        'Momentum': analyze_momentum(data['price'], data['open'], data['prev_close'], data['vwap'], data['change_pct']),
+        'Smart Money': analyze_smart_money(data['buy_qty'], data['sell_qty'], data['delivery_qty'], data['volume']),
+        'Wave': analyze_wave(data['price'], data['high_52'], data['low_52'], data['change_pct']),
+        'Volume': analyze_volume(data['volume']),
+        'Mean Rev': analyze_mean_reversion(data['price'], data['high_52'], data['low_52']),
+        'Sector': analyze_sector(sector),
+        'Risk': analyze_risk(data['price'], data['high_52'], data['low_52'], data['change_pct']),
+        'Price Action': analyze_price_action(data['price'], data['open'], data['high'], data['low'], data['prev_close']),
+        'Trend': analyze_trend_strength(data['price'], data['high_52'], data['low_52'], data['change_pct']),
+        'Breakout': analyze_volatility_breakout(data['price'], data['high_52'], data['low_52'], data['volume'])
     }
     
     total = sum(l['score'] for l in layers.values())
-    total = min(95, max(15, total))
+    total = min(95, max(20, total))
     
     active = [name for name, l in layers.items() if l['score'] >= 6]
     
-    if len(active) >= 7:
-        signal, stars, conf, pos = "🔥 SUPER SIGNAL", "⭐⭐⭐⭐⭐", "VERY HIGH", "20%"
+    if len(active) >= 9:
+        signal, stars, conf, pos = "SUPER SIGNAL", "⭐⭐⭐⭐⭐", "VERY HIGH", "20%"
+    elif len(active) >= 7:
+        signal, stars, conf, pos = "STRONG BUY", "⭐⭐⭐⭐", "HIGH", "15%"
     elif len(active) >= 5:
-        signal, stars, conf, pos = "🟢 STRONG BUY", "⭐⭐⭐⭐", "HIGH", "15%"
+        signal, stars, conf, pos = "BUY", "⭐⭐⭐", "MODERATE", "10%"
     elif len(active) >= 3:
-        signal, stars, conf, pos = "🔵 BUY", "⭐⭐⭐", "MODERATE", "10%"
-    elif len(active) >= 1:
-        signal, stars, conf, pos = "🟡 WATCH", "⭐⭐", "LOW", "5%"
+        signal, stars, conf, pos = "WATCH", "⭐⭐", "LOW", "5%"
     else:
-        signal, stars, conf, pos = "⚪ SKIP", "⭐", "NONE", "0%"
+        signal, stars, conf, pos = "SKIP", "⭐", "NONE", "0%"
     
     return {
         'symbol': symbol, 'sector': sector, 'price': data['price'],
@@ -315,7 +267,7 @@ def send_telegram(text):
 def run():
     results = []
     now = datetime.now()
-    print(f"🔥 MASTER COORDINATOR v6.0 - {now.strftime('%d-%b %I:%M %p')}")
+    print(f"MASTER COORDINATOR v7.0 - {now.strftime('%d-%b %I:%M %p')}")
     
     all_stocks = [(sym, sec) for sec, syms in STOCKS.items() for sym in syms]
     
@@ -323,61 +275,59 @@ def run():
         result = analyze_stock(symbol, sector)
         if result:
             results.append(result)
-            print(f"  {symbol:15} Rs.{result['price']:>8.0f} | Score:{result['score']:>3} | {result['active']}/8 layers | {result['signal']}")
+            print(f"  {symbol:15} Rs.{result['price']:>8.0f} | Score:{result['score']:>3} | {result['active']}/11 | {result['signal']}")
         else:
             print(f"  {symbol:15} ❌ No data")
         time.sleep(0.15)
     
     if not results:
-        send_telegram("❌ No data available.")
+        send_telegram("No data available.")
         return
     
     results.sort(key=lambda x: x['score'], reverse=True)
     
-    super_signals = [r for r in results if r['active'] >= 7]
-    strong = [r for r in results if 5 <= r['active'] < 7]
-    buy = [r for r in results if 3 <= r['active'] < 5]
+    super_sig = [r for r in results if r['active'] >= 9]
+    strong = [r for r in results if 7 <= r['active'] < 9]
+    buy = [r for r in results if 5 <= r['active'] < 7]
     
-    msg = f"<b>🔥 MASTER COORDINATOR v6.0</b>\n"
+    msg = f"<b>MASTER COORDINATOR v7.0</b>\n"
     msg += f"{now.strftime('%d-%b %I:%M %p')} IST\n"
     msg += f"{'═'*35}\n\n"
     
-    msg += f"<b>8-Layer Analysis:</b> Value | Momentum | Smart Money | Wave | Volume | Mean Rev | Sector | Risk\n\n"
+    msg += f"<b>11-Layer Analysis:</b>\nValue | Momentum | Smart Money | Wave | Volume | Mean Rev | Sector | Risk | Price Action | Trend | Breakout\n\n"
+    
     msg += f"<b>RESULTS:</b>\n"
-    msg += f"🔥 Super Signals (7-8 layers): {len(super_signals)}\n"
-    msg += f"🟢 Strong (5-6 layers): {len(strong)}\n"
-    msg += f"🔵 Buy (3-4 layers): {len(buy)}\n"
+    msg += f"Super Signals (9-11 layers): {len(super_sig)}\n"
+    msg += f"Strong Buy (7-8 layers): {len(strong)}\n"
+    msg += f"Buy (5-6 layers): {len(buy)}\n"
     msg += f"Total: {len(results)} stocks\n\n"
     
-    top = super_signals[:3] if super_signals else (strong[:3] if strong else results[:5])
+    top = super_sig[:3] if super_sig else (strong[:3] if strong else results[:5])
     
-    msg += f"<b>🎯 TOP PICKS</b>\n{'═'*35}\n\n"
+    msg += f"<b>TOP PICKS</b>\n{'═'*35}\n\n"
     
     for i, r in enumerate(top, 1):
-        emoji = "🔥" if r['active'] >= 7 else "🟢" if r['active'] >= 5 else "🔵"
+        emoji = "🔥" if r['active'] >= 9 else "🟢" if r['active'] >= 7 else "🔵"
         
         msg += f"{emoji} <b>#{i} {r['symbol']}</b> | {r['sector']} | Rs.{r['price']:.0f}\n"
         msg += f"{'─'*35}\n"
         msg += f"Score: <b>{r['score']}/100</b> {r['stars']}\n"
         msg += f"Signal: <b>{r['signal']}</b> | {r['confidence']}\n"
-        msg += f"Position: {r['position']} | Layers: {r['active']}/8\n\n"
+        msg += f"Position: {r['position']} | Layers: {r['active']}/11\n\n"
         
-        msg += f"<b>Active Signals:</b>\n"
-        for name, layer in r['layers'].items():
-            if layer['score'] >= 6:
-                msg += f"  ✅ {name}: {layer['detail']}\n"
-        
-        msg += f"\n<b>All Layers:</b>\n"
+        msg += f"<b>Layer Details:</b>\n"
         for name, layer in r['layers'].items():
             bar = "█" * layer['score'] + "░" * (10 - layer['score'])
-            msg += f"  {bar} {name}: {layer['detail']}\n"
+            emoji_l = "✅" if layer['score'] >= 6 else "⬜"
+            msg += f"  {emoji_l} {bar} {name}: {layer['detail']}\n"
         msg += f"\n"
     
     msg += f"{'═'*35}\n"
-    msg += f"<i>8-Layer Institutional Grade | Better than Wall Street</i>"
+    msg += f"<i>11-Layer Institutional Grade Analysis</i>\n"
+    msg += f"<i>9+/11 layers = Highest conviction trades</i>"
     
     send_telegram(msg)
-    print(f"\n✅ Sent! Super:{len(super_signals)} Strong:{len(strong)} Buy:{len(buy)}")
+    print(f"\n✅ Sent! Super:{len(super_sig)} Strong:{len(strong)} Buy:{len(buy)}")
 
 if __name__ == "__main__":
     run()
